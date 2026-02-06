@@ -1,5 +1,12 @@
 streamlit
 yfinance
 plotly
+pandas
 streamlit-autorefresh
-
+gspread
+oauth2client
+google-generativeai
+xgboost
+tensorflow-cpu
+scikit-learn
+prophet

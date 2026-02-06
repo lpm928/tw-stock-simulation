@@ -1,4 +1,5 @@
 import datetime
+from gsheet_handler import gsheet_logger
 
 class PaperBroker:
     def __init__(self, initial_balance=1000000.0):
@@ -278,4 +279,28 @@ class PaperBroker:
             "Tax": tax,
             "P&L": pnl if pnl != 0 else 0
         }
+
         self.transaction_history.append(record)
+        
+        # --- Google Sheet Logging ---
+        try:
+            # Sync to Cloud
+            # Map record keys to GSheet Log expectations if needed, but log_trade handles loose dicts well
+            log_data = {
+                "date": record["Time"],
+                "symbol": record["Stock"],
+                "action": record["Action"],
+                "price": record["Price"],
+                "qty": record["Qty"],
+                "fee": record["Fee"],
+                "tax": record["Tax"],
+                "amount": record["Price"] * abs(record["Qty"]), # Approx
+                "balance": self.balance,
+                "msg": f"PnL: {record['P&L']}"
+            }
+            gsheet_logger.log_trade("Stock_Bot_Log", log_data)
+        except Exception as e:
+            print(f"Cloud Log Error: {e}")
+            pass
+            
+        return record

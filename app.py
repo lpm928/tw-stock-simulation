@@ -6,7 +6,14 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
-from utils import fetch_twse_institutional_data, get_stock_data, get_latest_price, get_realtime_quote
+from utils import fetch_twse_institutional_data, get_stock_data, get_latest_price, get_realtime_quote, get_top_movers_batch, get_sector_performance
+from broker import PaperBroker
+from strategy import check_strategy, calculate_indicators, get_signal, get_strategy_status
+from backtest import BacktestEngine
+from data_manager import save_data, load_data
+from stock_map import get_stock_name, STOCK_NAMES
+from ui_resources import ST_STYLE, MANUAL_TEXT
+from utils import fetch_twse_institutional_data, get_stock_data, get_latest_price, get_realtime_quote, get_top_movers_batch, get_sector_performance, get_fundamental_data, fetch_shareholding_data, get_financial_statement, get_dividend_history, get_recent_news
 from broker import PaperBroker
 from strategy import check_strategy, calculate_indicators, get_signal, get_strategy_status
 from backtest import BacktestEngine
@@ -14,6 +21,8 @@ from data_manager import save_data, load_data
 from stock_map import get_stock_name, STOCK_NAMES
 from ui_resources import ST_STYLE, MANUAL_TEXT
 from auth import render_login_ui
+from ai_advisor import get_gemini_response, construct_stock_prompt, get_available_models
+from prediction_engine import prepare_data, train_xgboost
 
 # Set page config
 st.set_page_config(page_title="台股智投旗艦版", layout="wide", page_icon="📈")
@@ -31,8 +40,8 @@ def persist():
     )
 
 def main_app():
-    # 1. Auto-refresh
-    count = st_autorefresh(interval=30000, key="datarefresh")
+    # Auto-refresh moved to page specific logic
+
     
     # --- Global Sidebar ---
     st.sidebar.title(f"👤 {st.session_state.get('username', 'User')}")
@@ -75,13 +84,290 @@ def main_app():
         st.sidebar.metric("加權指數", "N/A")
 
     # --- Navigation ---
-    page = st.sidebar.radio("功能導覽", ["🖥️ 模擬操盤室", "🤖 智能機器人", "🔬 回測實驗室", "📚 使用指南"], index=0)
+    page = st.sidebar.radio("功能導覽", ["🖥️ 模擬操盤室", "📊 盤後分析", "🔬 個股研究室", "🧠 AI 預測實驗室", "🤖 智能機器人", "🔬 回測實驗室", "📚 使用指南"], index=0)
 
     # ==========================================
-    # PAGE: TRADING ROOM (Merged Dashboard, Analysis, Portfolio)
+    # PAGE: STOCK RESEARCH (AI + Data)
     # ==========================================
+    if page == "🤖 智能機器人":
+        st.title("🤖 智能自動交易機器人")
+        st.info("⚠️ 請保持此頁面開啟，機器人才能持續監控盤勢。")
+        
+        # Auto-refresh for Bot (60s to save quota)
+        count = st_autorefresh(interval=60000, key="bot_refresh")
+    elif page == "🔬 個股研究室":
+        st.title("🔬 個股全方位研究室")
+        st.caption("整合基本面、籌碼面與 AI 智能分析 (Integrating Fundamentals, Chips & AI)")
+        
+        # --- Input Section ---
+        col_input, col_ai_key = st.columns([1, 2])
+        with col_input:
+            target = st.text_input("輸入股票代號 (e.g. 2330)", value="2330", key="stock_code_input")
+            target_code = target.split(".")[0] + ".TW" if "." not in target else target
+            stock_name = get_stock_name(target_code)
+        
+        with col_ai_key:
+            api_key = st.text_input("🔑 Gemini API Key (AI 分析用)", type="password", key="ai_api_key_input", help="請輸入您的 Google Gemini API 金鑰以啟用 AI 分析功能")
+            
+            # Dynamic Model Selection
+            if api_key:
+                model_options = get_available_models(api_key)
+            else:
+                model_options = ["請先輸入 Key"]
+                
+            model_select = st.selectbox("選擇 AI 模型", model_options, key="ai_model_select")
+
+        col_head, col_ref = st.columns([5, 1])
+        with col_head: st.divider()
+        with col_ref:
+            if st.button("🔄 強制更新"):
+                st.cache_data.clear()
+                st.rerun()
+
+        # --- Data Fetching ---
+        if target:
+            # 1. Price Data
+            df_price = get_stock_data(target_code, period="6mo")
+            quote = get_realtime_quote(target_code)
+            
+            # 2. Fundamental Data
+            fund_data = get_fundamental_data(target_code)
+            
+            # 3. Institutional Data
+            inst_data = fetch_twse_institutional_data(target.split(".")[0])
+            
+            # 4. Chips Data (Shareholding)
+            chips_data = fetch_shareholding_data(target.split(".")[0])
+            
+            # 5. Financials & Dividends & News
+            inc_df, bal_df = get_financial_statement(target_code)
+            div_df = get_dividend_history(target_code)
+            news_list = get_recent_news(target_code)
+
+            # --- Layout: Header Metrics ---
+            st.header(f"{stock_name} ({target_code})")
+            
+            m1, m2, m3, m4, m5 = st.columns(5)
+            m1.metric("目前股價", f"{quote['price']}", f"{quote['pct']:.2f}%")
+            m2.metric("EPS (Trailing)", fund_data.get('EPS (Trailing)', '-'))
+            m3.metric("ROE", fund_data.get('ROE', '-'))
+            m4.metric("殖利率", fund_data.get('Dividend Yield', '-'))
+            m5.metric("本益比 P/E", fund_data.get('P/E Ratio', '-'))
+
+            # --- Layout: Charts (Tabs) ---
+            tab_tech, tab_chip, tab_fund, tab_news, tab_ai = st.tabs(["📉 技術走勢", "💰 籌碼分析", "📊 財報與配息", "📰 新聞快訊", "🤖 AI 智能報告"])
+            
+            with tab_tech:
+                if not df_price.empty:
+                    fig = go.Figure(go.Candlestick(x=df_price.index, open=df_price['Open'], high=df_price['High'], low=df_price['Low'], close=df_price['Close'], name="Price"))
+                    fig.update_layout(height=450, title=f"{stock_name} 日K線圖", template="plotly_dark", xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+            
+            with tab_chip:
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.subheader("三大法人買賣超 (30日)")
+                    if not inst_data.empty:
+                         fig_inst = go.Figure()
+                         fig_inst.add_trace(go.Bar(x=inst_data.index, y=inst_data.get('Foreign_Net', []), name='外資'))
+                         fig_inst.add_trace(go.Bar(x=inst_data.index, y=inst_data.get('Trust_Net', []), name='投信'))
+                         fig_inst.update_layout(height=400, barmode='stack', template="plotly_dark", legend=dict(orientation="h"))
+                         st.plotly_chart(fig_inst, use_container_width=True)
+                    else:
+                        st.info("無法人數據")
+                
+                with c2:
+                    st.subheader("大戶持股比例 (千張大戶)")
+                    if not chips_data.empty:
+                        fig_chip = px.line(chips_data, x="date", y="HoldingProportion", markers=True, title="大戶持股比例趨勢")
+                        fig_chip.update_layout(height=400, template="plotly_dark")
+                        st.plotly_chart(fig_chip, use_container_width=True)
+                    else:
+                        st.warning("⚠️ 無集保戶股權分散數據")
+                        
+            with tab_fund:
+                f1, f2 = st.columns(2)
+                with f1:
+                    st.subheader("📊 損益表概況 (Quarterly)")
+                    if not inc_df.empty:
+                        st.dataframe(inc_df.iloc[:, :4], height=300) # Show last 4 quarters
+                    else:
+                        st.info("無財報數據")
+                        
+                with f2:
+                    st.subheader("💵 歷年配息紀錄")
+                    if not div_df.empty:
+                        st.bar_chart(div_df.head(10)) # Show last 10 records
+                    else:
+                        st.info("無配息數據")
+            
+            with tab_news:
+                st.subheader("📰 近期市場新聞")
+                if news_list:
+                    for n in news_list[:5]:
+                        with st.expander(f"{n.get('title', 'No Title')} - {n.get('publisher', 'Unknown')}"):
+                            st.write(f"Link: {n.get('link', '#')}")
+                            # st.write(f"Published: {datetime.datetime.fromtimestamp(n.get('providerPublishTime', 0))}")
+                else:
+                    st.info("目前無相關新聞")
+
+            with tab_ai:
+                st.subheader("🤖 AI 趨勢分析報告")
+                
+                # Report Persistence Key
+                report_key = f"ai_report_{target_code}"
+                
+                # Check for existing report
+                if report_key in st.session_state:
+                    st.success("✅ 已載入先前的分析報告")
+                    st.markdown(st.session_state[report_key])
+                    if st.button("🔄 重新生成報告"):
+                        del st.session_state[report_key]
+                        st.rerun()
+                else:
+                    if st.button("🚀 生成分析報告", type="primary"):
+                        if not api_key:
+                            st.error("請先在上方輸入 Gemini API Key")
+                        else:
+                            prompt_text = construct_stock_prompt(target_code, stock_name, df_price, fund_data, inst_data, chips_data, inc_df, div_df, news_list)
+                            
+                            st.markdown("### 分析生成中...")
+                            res_box = st.empty()
+                            full_text = ""
+                            
+                            response_stream = get_gemini_response(api_key, model_select, prompt_text)
+                            
+                            if isinstance(response_stream, str):
+                                st.error(response_stream)
+                            else:
+                                for chunk in response_stream:
+                                    txt = chunk.text
+                                    full_text += txt
+                                    res_box.markdown(full_text)
+                                
+                                # Store for persistence
+                                st.session_state[report_key] = full_text
+                                st.success("分析完成！報告已儲存。")
+                            
+
+    if page == "📊 盤後分析":
+        st.title("📊 盤後籌碼分析實驗室")
+        col_head, col_btn = st.columns([4, 1])
+        with col_head:
+            st.caption("提供大盤綜覽、強弱勢股排行與法人籌碼動向分析 (Source: Market Data)")
+        with col_btn:
+            if st.button("🔄 手動更新資料"):
+                st.cache_data.clear() # Clear cache to force new data
+                st.rerun()
+        
+        tab1, tab2, tab3 = st.tabs(["🏛️ 大盤與類股", "📈 強弱勢排行", "💰 法人籌碼"])
+        
+        # --- TAB 1: Market & Sector ---
+        with tab1:
+            m1, m2 = st.columns([1, 1])
+            with m1:
+                st.subheader("加權指數走勢")
+                q = get_realtime_quote("^TWII")
+                
+                # Check colors
+                c_func = lambda x: ":red" if x > 0 else ":green" if x < 0 else ""
+                val_color = "red" if q['change'] > 0 else "green" if q['change'] < 0 else "white"
+                
+                st.markdown(f"""
+                ### {q['price']:,.0f} <span style='color:{val_color}'>{q['change']:+.0f} ({q['pct']:+.2f}%)</span>
+                """, unsafe_allow_html=True)
+                
+                # TAIEX Chart
+                df_twii = get_stock_data("^TWII", period="6mo")
+                if not df_twii.empty:
+                    fig = go.Figure(data=[go.Candlestick(
+                        x=df_twii.index,
+                        open=df_twii['Open'], high=df_twii['High'], low=df_twii['Low'], close=df_twii['Close'],
+                        name="TAIEX"
+                    )])
+                    fig.update_layout(height=400, xaxis_rangeslider_visible=False, template="plotly_dark")
+                    st.plotly_chart(fig, use_container_width=True)
+
+            with m2:
+                st.subheader("🔥 類股/族群表現 (Proxy)")
+                sec_df = get_sector_performance()
+                if not sec_df.empty:
+                    # Bar Chart
+                    fig_sec = px.bar(
+                        sec_df, x="Change", y="Sector", orientation='h', 
+                        color="Change", color_continuous_scale=["green", "red"],
+                        range_color=[-3, 3],
+                        text_auto='.2f'
+                    )
+                    fig_sec.update_layout(height=400, yaxis={'categoryorder':'total ascending'})
+                    st.plotly_chart(fig_sec, use_container_width=True)
+                else:
+                    st.warning("無法取得類股資料")
+
+        # --- TAB 2: Top Movers ---
+        with tab2:
+            st.subheader("🚀 全市場強弱勢排行 (Top 100 Sample)")
+            if st.button("🔄 刷新排行數據"):
+                with st.spinner("正在掃描全市場數據..."):
+                    gainers, losers, active = get_top_movers_batch()
+                    
+                    c1, c2, c3 = st.columns(3)
+                    
+                    def show_table(df, title, color_col):
+                        st.markdown(f"**{title}**")
+                        if not df.empty:
+                            # Add Name
+                            df['Name'] = [get_stock_name(t) for t in df.index]
+                            df = df[['Name', 'Price', 'ChangePct', 'Volume']]
+                            st.dataframe(
+                                df.style.format({
+                                    'Price': '{:.2f}', 
+                                    'ChangePct': '{:+.2f}%',
+                                    'Volume': '{:,.0f}'
+                                }).background_gradient(subset=['ChangePct'], cmap=color_col),
+                                height=400
+                            )
+                    
+                    with c1: show_table(gainers, "📈 漲幅排行", "Reds")
+                    with c2: show_table(losers, "📉 跌幅排行", "Greens_r") # Reverse green for drops
+                    with c3: show_table(active, "🔥 成交量排行", "Blues")
+            else:
+                st.info("點擊按鈕載入最新排行 (為節省流量，不自動載入)")
+
+        # --- TAB 3: Institutional ---
+        with tab3:
+            st.subheader("💰 個股法人動向 (外資/投信/自營商)")
+            target = st.text_input("輸入代碼查看籌碼 (e.g. 2330)", value="2330")
+            if target:
+                target_code = target.split(".")[0] + ".TW" if "." not in target else target
+                
+                c_chart, c_data = st.columns([2, 1])
+                
+                with c_chart:
+                    inst_df = fetch_twse_institutional_data(target.split(".")[0])
+                    if not inst_df.empty:
+                        # Stacked Bar
+                        fig_inst = go.Figure()
+                        fig_inst.add_trace(go.Bar(x=inst_df.index, y=inst_df.get('Foreign_Net', []), name='外資'))
+                        fig_inst.add_trace(go.Bar(x=inst_df.index, y=inst_df.get('Trust_Net', []), name='投信'))
+                        fig_inst.add_trace(go.Bar(x=inst_df.index, y=inst_df.get('Dealer_Net', []), name='自營商'))
+                        
+                        fig_inst.update_layout(barmode='stack', title=f"{get_stock_name(target_code)} - 法人買賣超", height=400, template="plotly_dark")
+                        st.plotly_chart(fig_inst, use_container_width=True)
+                    else:
+                        st.warning("查無法人資料 (可能為非上市櫃或資料來源連線失敗)")
+                
+                with c_data:
+                    # Also Stock Price
+                    price_df = get_stock_data(target_code, period="1mo")
+                    if not price_df.empty:
+                         fig_p = go.Figure(go.Candlestick(x=price_df.index, open=price_df['Open'], high=price_df['High'], low=price_df['Low'], close=price_df['Close']))
+                         fig_p.update_layout(title="股價走勢", height=400, template="plotly_dark")
+                         st.plotly_chart(fig_p, use_container_width=True)
     if page == "🖥️ 模擬操盤室":
         st.title("🖥️ 台股模擬操盤室")
+        # Auto-refresh for Trading Room (30s)
+        count = st_autorefresh(interval=30000, key="trading_refresh")
         
         # --- 1. KPI Cards (Top Row) ---
         acc = st.session_state.broker.get_account_summary(current_prices={c: get_latest_price(c) for c in st.session_state.broker.inventory})
@@ -368,6 +654,9 @@ def main_app():
             # Simple aggregation
             if st.session_state.broker.transaction_history:
                 df_h = pd.DataFrame(st.session_state.broker.transaction_history)
+                # Ensure numeric
+                df_h['P&L'] = pd.to_numeric(df_h['P&L'], errors='coerce').fillna(0)
+                
                 total_fees = df_h['Fee'].sum() + df_h['Tax'].sum()
                 total_win = df_h[df_h['P&L'] > 0]['P&L'].sum()
                 total_loss = df_h[df_h['P&L'] < 0]['P&L'].sum()
@@ -377,11 +666,306 @@ def main_app():
                 c2.metric("總獲利交易", f"{total_win:,.0f}")
                 c3.metric("總虧損交易", f"{total_loss:,.0f}")
             else:
-                st.info("累積足夠交易後將顯示統計")
+                    st.info("累積足夠交易後將顯示統計")
 
     # ==========================================
-    # PAGE: MANUAL
+    # PAGE: AI PREDICTION LAB
     # ==========================================
+    elif page == "🧠 AI 預測實驗室":
+        from ui_resources import AI_MODEL_EXPLANATION
+        
+        st.title("🧠 AI 股價預測實驗室")
+        st.caption("結合 機器學習 (XGBoost) 與 深度學習 (LSTM) 的混合專家系統")
+        
+        with st.expander("📖 了解 AI 如何運算 (模型原理說明)", expanded=False):
+            st.markdown(AI_MODEL_EXPLANATION)
+            
+        st.divider()
+        
+        # --- Sidebar Controls ---
+        st.sidebar.header("⚙️ 模型參數設定")
+        
+        # 2. Comparison Mode (Single or Batch)
+        mode = st.sidebar.radio("模式選擇", ["單一股票分析", "批量掃描 (Batch)"], horizontal=True)
+        
+        target_tickers = []
+        
+        if mode == "單一股票分析":
+            pred_ticker = st.sidebar.text_input("股票代號", value="2330.TW", key="pred_ticker")
+            if pred_ticker and pred_ticker.isdigit() and len(pred_ticker) == 4:
+                pred_ticker += ".TW"
+            target_tickers = [pred_ticker]
+        else:
+            # Sync with Watchlist
+            act_name = st.session_state.get('active_list', 'Default')
+            watch_items = st.session_state.watchlists.get(act_name, ["2330.TW"])
+            default_list = ", ".join(watch_items)
+            
+            st.sidebar.caption(f"📋 已載入清單：{act_name} ({len(watch_items)}檔)")
+            user_list = st.sidebar.text_area("股票清單 (可手動修改)", value=default_list, height=100)
+            
+            # Parse list
+            raw_list = [x.strip() for x in user_list.replace('\n', ',').split(',')]
+            for t in raw_list:
+                if t:
+                    if t.isdigit() and len(t) == 4: t += ".TW"
+                    target_tickers.append(t)
+        
+        # 3. Parameters
+        lookback_years = st.sidebar.slider("訓練資料長度 (年)", 1, 5, 2)
+        forecast_days = st.sidebar.slider("預測未來天數 (Days)", 1, 5, 5)
+        
+        start_text = "🚀 啟動單一分析" if mode == "單一股票分析" else f"🚀 啟動批量掃描 ({len(target_tickers)}檔)"
+        start_btn = st.sidebar.button(start_text, type="primary")
+        
+        if start_btn and target_tickers:
+            st.divider()
+            
+            # Container for all results
+            batch_summary = []
+            detailed_reports = [] # To store figures and dataframes for sequential rendering
+            
+            total_stocks = len(target_tickers)
+            main_prog = st.progress(0, text=f"開始執行 {total_stocks} 檔股票 AI 預測...")
+            
+            from prediction_engine import train_xgboost, train_lstm, train_prophet
+            
+            for idx, ticker in enumerate(target_tickers):
+                stock_name = get_stock_name(ticker)
+                main_prog.progress((idx) / total_stocks, text=f"正在分析 ({idx+1}/{total_stocks}): {ticker} {stock_name} ...")
+                
+                try:
+                    # 1. Data Prep
+                    feature_df = prepare_data(ticker, period=f"{lookback_years}y")
+                    
+                    if feature_df.empty:
+                        st.warning(f"⚠️ {ticker} 無法取得數據，跳過。")
+                        continue
+                        
+                    last_close = float(feature_df['Close'].iloc[-1])
+                    last_date = feature_df.index[-1]
+                    
+                    # 2. XGBoost
+                    xgb_predictions = []
+                    # Enhanced Feature Set
+                    features = ['Close', 'MA5', 'MA20', 'RSI', 'MACD', 'MACD_Hist', 'K', 'D', 'UpperB', 'LowerB', 'PctChange', 'VolChange', 'VIX']
+                    latest_features = feature_df.iloc[-1:][features]
+                    
+                    for d in range(1, forecast_days + 1):
+                        model_x, results_x, mae_x, rmse_x, mape_x, f_imp_x = train_xgboost(feature_df, horizon=d)
+                        
+                        # Capture T+1 Backtest Data for Visualization
+                        if d == 1:
+                            backtest_xgb = results_x
+                            
+                        next_pred = model_x.predict(latest_features)[0]
+                        conf_score = max(0, 100 * (1 - mape_x))
+                        xgb_predictions.append({"Day": f"T+{d}", "Price": next_pred, "Conf": conf_score, "MAE": mae_x, "Imp": f_imp_x})
+                        
+                    # 3. LSTM
+                    model_l, results_l, mae_l, rmse_l, mape_l, future_prices_l, history_l = train_lstm(
+                        feature_df, forecast_days=forecast_days, seq_length=60, epochs=10
+                    )
+                    
+                    # 4. Prophet (NEW)
+                    prophet_forecast, future_prices_p, model_p, mae_p = train_prophet(feature_df, forecast_days=forecast_days)
+                    
+                    # --- Aggregate T+1 Results ---
+                    t1_xgb = xgb_predictions[0]['Price']
+                    t1_lstm = future_prices_l[0]
+                    t1_prophet = future_prices_p[0] # Prophet T+1
+                    
+                    avg_pred = (t1_xgb + t1_lstm + t1_prophet) / 3
+                    change_val = avg_pred - last_close
+                    change_pct = (change_val / last_close) * 100
+                    
+                    # Store Summary
+                    batch_summary.append({
+                        "代號": ticker,
+                        "名稱": stock_name,
+                        "收盤價": last_close,
+                        "XGBoost": round(t1_xgb, 2),
+                        "LSTM": round(t1_lstm, 2),
+                        "Prophet": round(t1_prophet, 2),
+                        "平均預測": round(avg_pred, 2),
+                        "Change%": change_pct
+                    })
+                    
+                    # 5. Prepare Detailed Visualization (Store for later rendering)
+                    
+                    # Consolidated Data for Table
+                    comp_data = []
+                    for i in range(forecast_days):
+                         xp = xgb_predictions[i]['Price']
+                         lp = future_prices_l[i]
+                         pp = future_prices_p[i]
+                         ap = (xp + lp + pp) / 3
+                         comp_data.append({
+                             "Day": f"T+{i+1}",
+                             "XGB": f"{xp:.1f}",
+                             "LSTM": f"{lp:.1f}",
+                             "Prophet": f"{pp:.1f}",
+                             "Avg": f"{ap:.1f}",
+                             "Chg%": f"{((ap-last_close)/last_close)*100:+.2f}%"
+                         })
+
+                    # Chart Data
+                    fig = go.Figure()
+                    
+                    # History (Last 90 days)
+                    hist_data = feature_df.iloc[-90:]
+                    fig.add_trace(go.Scatter(x=hist_data.index, y=hist_data['Close'], name='歷史股價', line=dict(color='gray', width=2)))
+                    
+                    # Future Dates
+                    future_dates = [last_date + datetime.timedelta(days=i) for i in range(1, forecast_days+1)]
+                    
+                    # XGB Line
+                    xgb_line = [p['Price'] for p in xgb_predictions]
+                    fig.add_trace(go.Scatter(x=future_dates, y=xgb_line, name='XGB (技術)', line=dict(color='#00CC96', width=3, dash='dot')))
+                    
+                    # LSTM Line
+                    lstm_line = future_prices_l
+                    fig.add_trace(go.Scatter(x=future_dates, y=lstm_line, name='LSTM (趨勢)', line=dict(color='#EF553B', width=3)))
+                    
+                    # Prophet Line
+                    prophet_line = future_prices_p
+                    fig.add_trace(go.Scatter(x=future_dates, y=prophet_line, name='Prophet (週期)', line=dict(color='#AB63FA', width=3, dash='dash')))
+
+                    fig.update_layout(title=f"{ticker} {stock_name} - 三大 AI 模型預測走勢", template="plotly_dark", height=400)
+                    
+                    # Collect Metrics
+                    metrics = {
+                        "MAE_XGB": xgb_predictions[0]['MAE'],
+                        "MAE_LSTM": mae_l,
+                        "MAE_Prophet": mae_p
+                    }
+
+                    detailed_reports.append({
+                        "ticker": ticker,
+                        "name": stock_name,
+                        "change_pct": change_pct, # Key for sorting
+                        "fig": fig,
+                        "comp_df": pd.DataFrame(comp_data),
+                        "loss_history": history_l.history['loss'] if history_l else [],
+                        "mape_x": mape_x,
+                        "mape_l": mape_l,
+                        "f_imp": xgb_predictions[0]['Imp'], # Added Feature Importance
+                        "prophet_model": model_p,
+                        "prophet_forecast": prophet_forecast,
+                        "backtest_xgb": backtest_xgb,
+                        "backtest_lstm": results_l
+                    })
+                    
+                except Exception as e:
+                    st.error(f"Error analyzing {ticker}: {e}")
+            
+            main_prog.progress(100, text="✅ 分析完成！正在生成報告...")
+            
+            # --- RENDER SECTION ---
+            
+            if batch_summary:
+                # 1. Leaderboard
+                st.header("🏆 AI 潛力股排行榜 (Leaderboard)")
+                st.caption("依據 T+1 預測漲幅由高至低排序")
+                
+                summary_df = pd.DataFrame(batch_summary)
+                summary_df = summary_df.sort_values(by="Change%", ascending=False).reset_index(drop=True)
+                
+                # Formatting
+                st.dataframe(
+                    summary_df.style.format({
+                        "Current": "{:.1f}",
+                        "XGB T+1": "{:.1f}",
+                        "LSTM T+1": "{:.1f}",
+                        "Avg T+1": "{:.1f}",
+                        "Change%": "{:+.2f}%",
+                        "Conf(Avg)": "{:.0f}%"
+                    }).background_gradient(subset=['Change%'], cmap='RdYlGn'),
+                    use_container_width=True
+                )
+                
+                st.divider()
+                
+                # 2. Detailed Reports (Sorted)
+                st.header("📉 個股詳細分析 (Detailed Reports)")
+                
+                # Sort reports list by change_pct desc
+                detailed_reports.sort(key=lambda x: x['change_pct'], reverse=True)
+                
+                for report in detailed_reports:
+                    with st.expander(f"📊 {report['ticker']} {report['name']} | 預測漲幅: {report['change_pct']:+.2f}%", expanded=len(detailed_reports)==1):
+                        c1, c2 = st.columns([2, 1])
+                        
+                        with c1:
+                            st.plotly_chart(report['fig'], use_container_width=True)
+                        
+                        with c2:
+                            st.write("##### 每日預測數據")
+                            st.dataframe(report['comp_df'], hide_index=True)
+                            
+                            st.write("##### 模型誤差 (MAPE)")
+                            st.write(f"XGB: {report['mape_x']*100:.1f}% | LSTM: {report['mape_l']*100:.1f}%")
+                            
+                            if report['loss_history']:
+                                st.area_chart(report['loss_history'], height=100, color='#888888')
+                                st.caption("LSTM Training Loss")
+
+                        # --- Feature Importance ---
+                        if 'f_imp' in report:
+                            st.markdown("🔑 **XGBoost 決策關鍵因子**")
+                            imp_df = pd.DataFrame(list(report['f_imp'].items()), columns=['Feature', 'Importance'])
+                            imp_df = imp_df.sort_values(by='Importance', ascending=True)
+                            fig_imp = px.bar(imp_df, x='Importance', y='Feature', orientation='h', height=300, template="plotly_dark")
+                            st.plotly_chart(fig_imp, use_container_width=True)
+
+                        # --- Prophet Components ---
+                        st.write("🔮 **Prophet 週期性分析 (趨勢/週效應/年效應)**")
+                        try:
+                            from prophet.plot import plot_components_plotly
+                            if 'prophet_model' in report:
+                                fig_comp = plot_components_plotly(report['prophet_model'], report['prophet_forecast'])
+                                fig_comp.update_layout(height=600, template="plotly_dark")
+                                st.plotly_chart(fig_comp, use_container_width=True)
+                        except:
+                            st.warning("無法繪製 Prophet 組件圖")
+
+                        # --- Backtest Visualization (NEW) ---
+                        st.divider()
+                        st.markdown("📉 **模型回測驗證 (過去 90 天準確度)**")
+                        st.caption("此圖顯示模型對「過去股價」的預測能力 (白線:實際, 虛線:預測)。")
+                        
+                        bt_fig = go.Figure()
+                        
+                        # 1. Actual Price (from XGB test set)
+                        if 'backtest_xgb' in report:
+                            bx = report['backtest_xgb']
+                            if not bx.empty:
+                                bx = bx.tail(90) # Limit to last 90 days
+                                bt_fig.add_trace(go.Scatter(x=bx.index, y=bx['Actual'], name='實際股價 (Actual)', line=dict(color='white', width=2)))
+                                bt_fig.add_trace(go.Scatter(x=bx.index, y=bx['Predicted'], name='XGB 預測', line=dict(color='#00CC96', width=1, dash='dot')))
+                                
+                        # 2. LSTM (Self-Check)
+                        if 'backtest_lstm' in report:
+                            bl = report['backtest_lstm']
+                            # Note: bl might be dataframe or list depending on how train_lstm returned it
+                            # train_lstm returns 'results' dataframe with 'Predicted' column
+                            if isinstance(bl, pd.DataFrame) and not bl.empty:
+                                bl = bl.tail(90) # Limit to last 90 days
+                                bt_fig.add_trace(go.Scatter(x=bl.index, y=bl['Predicted'], name='LSTM 預測', line=dict(color='#EF553B', width=1, dash='dot')))
+
+                        # 3. Prophet (History Fit) 
+                        if 'prophet_forecast' in report:
+                            bp = report['prophet_forecast']
+                            # Filter to last 90 days
+                            cutoff = datetime.datetime.now()
+                            bp_hist = bp[bp['ds'] < cutoff].tail(90)
+                            bt_fig.add_trace(go.Scatter(x=bp_hist['ds'], y=bp_hist['yhat'], name='Prophet 擬合', line=dict(color='#AB63FA', width=1, dash='dash')))
+
+                        bt_fig.update_layout(title="AI 模型回測 vs 實際走勢", template="plotly_dark", height=400)
+                        st.plotly_chart(bt_fig, use_container_width=True)
+                                
+            else:
+                st.warning("沒有成功產生的預測結果。")
     elif page == "📚 使用指南":
         st.markdown(MANUAL_TEXT)
 

@@ -22,6 +22,17 @@ def save_users(users):
         json.dump(users, f)
 
 def login_user(username, password):
+    # 1. Try Cloud Auth
+    try:
+        from gsheet_handler import gsheet_logger
+        cloud_users = gsheet_logger.fetch_all_users("Stock_Bot_Log")
+        if username in cloud_users:
+            if cloud_users[username] == hash_password(password):
+                return True
+    except Exception as e:
+        print(f"Cloud Login Error: {e}")
+
+    # 2. Local Fallback
     users = load_users()
     if username in users:
         if users[username] == hash_password(password):
@@ -29,12 +40,34 @@ def login_user(username, password):
     return False
 
 def register_user(username, password):
+    # Check Cloud Dupes
+    try:
+        from gsheet_handler import gsheet_logger
+        cloud_users = gsheet_logger.fetch_all_users("Stock_Bot_Log")
+        if username in cloud_users:
+             return False, "帳號已存在的 (Cloud)"
+    except:
+        pass
+
+    # Check Local Dupes
     users = load_users()
     if username in users:
-        return False, "帳號已存在"
+        return False, "帳號已存在的 (Local)"
     
-    users[username] = hash_password(password)
+    hashed = hash_password(password)
+    
+    # Save Local (Backup)
+    users[username] = hashed
     save_users(users)
+    
+    # Save Cloud (Primary)
+    try:
+        gsheet_logger.register_user_db("Stock_Bot_Log", username, hashed)
+        # Also log event (Old method, can keep or remove, keeping for history)
+        # gsheet_logger.log_user("Stock_Bot_Log", username) 
+    except Exception as e:
+        print(f"Cloud Register Error: {e}")
+        
     return True, "註冊成功，請登入"
 
 def render_login_ui():

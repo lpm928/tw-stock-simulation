@@ -1,28 +1,68 @@
 ST_STYLE = """
 <style>
-    /* Global Font */
-    html, body, [class*="css"] {
-        font-family: 'Roboto', 'Helvetica Neue', '微軟正黑體', sans-serif;
+    /* Professional Dark Theme */
+    .stApp {
+        background-color: #0E1117;
+        color: #FAFAFA;
     }
-
-    /* Metrics */
-    div[data-testid="stMetricValue"] {
-        border: 1px solid rgba(255, 255, 255, 0.2);
+    /* Metric Cards */
+    div[data-testid="stMetric"] {
         background-color: #262730;
-        color: white;
-        transition: all 0.3s;
+        border: 1px solid #464B5C;
+        padding: 15px;
+        border-radius: 5px;
     }
-    .stButton button:hover {
-        border-color: #ff4b4b;
-        color: #ff4b4b;
+    /* Tabs */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
     }
-    
-    /* Expander */
-    .streamlit-expanderHeader {
-        background-color: #1c1e26;
-        border-radius: 4px;
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: transparent;
+        border-radius: 4px 4px 0px 0px;
+        color: #FAFAFA;
+        font-weight: 600;
+    }
+    div[data-testid="stExpander"] {
+        background-color: #1E1E1E;
+        border: 1px solid #464B5C;
+        border-radius: 5px;
     }
 </style>
+"""
+
+AI_MODEL_EXPLANATION = """
+### 🧠 AI 模型運算邏輯解密
+
+本平台採用兩種截然不同的先進演算法進行「混合專家 (Mixture of Experts)」預測，讓您能同時參考機器學習與深度學習的觀點。
+
+#### 1. XGBoost (極端梯度提升樹) - 機器學習專家 🤖
+*   **核心概念**: 它是「決策樹 (Decision Tree)」的集大成者。想像有 100 位分析師，每位都只懂一點點股票規則（例如：RSI > 70 就賣），XGBoost 會將這 100 位的意見加權整合，修正彼此的錯誤，形成強大的預測力。
+*   **運算特徵**: 
+    *   專注於 **「當下狀態」** 與 **「技術指標」** 之間的關係。
+    *   輸入特徵包含：移動平均線 (MA5, MA20)、RSI 相對強弱指標、乖離率 (PctChange)、成交量變化 (VolChange)、恐慌指數 (VIX)。
+*   **強項**: 對於突發性的漲跌、明確的技術訊號反應極快，且不易過度擬合 (Overfitting)。
+
+#### 2. LSTM (長短期記憶神經網路) - 深度學習大腦 🧠
+*   **核心概念**: 這是一種模仿真人記憶機制的類神經網路。一般的模型只看「今天」，但 LSTM 擁有「記憶單元」，能記住過去 60 天的股價走勢圖形 (Pattern)。它不只看數字，更是在看「趨勢的慣性」。
+*   **運算特徵**:
+    *   **遞迴預測 (Recursive Prediction)**: 在預測未來 5 天時，它會將「T+1 的預測值」當作已知事實，重新餵入模型去推算 T+2，以此類推。這模擬了人類推演未來的情境。
+    *   **全歷史學習**: 模型在最終預測前，會重新掃描過去 2 年每一天的歷史軌跡，確保掌握最新的市場節奏。
+*   **強項**: 擅長捕捉時間序列中的「週期性」與「長期趨勢」，對於連續上漲或下跌的慣性捕捉能力極強。
+
+#### 3. Prophet (先知模型) - 週期循環大師 🔮
+*   **核心概念**: 由 Meta (Facebook) 開發，專門用來處理具有「季節性」的數據。它不看 RSI 或均線，而是將股價拆解成：**長期趨勢** + **季節性循環 (週/年)** + **假日效應**。
+*   **運算特徵**:
+    *   **季節拆解**: 它能算出這檔股票是否「每逢週五容易跌？」或「每年 10 月容易漲？」。
+    *   **穩健趨勢**: 它的預測線通常較為平滑，不易受單日暴漲暴跌影響，代表的是一種「應有的合理價值」。
+*   **強項**: 對於中長期的「規律性」捕捉非常精準，適合用來觀察「大方向」與「季節效應」。
+
+#### ⚖️ 三大模型如何共用？
+*   **短線爆發**: 看 **XGBoost** (技術指標最敏感)。
+*   **波段趨勢**: 看 **LSTM** (慣性與記憶)。
+*   **中長佈局**: 看 **Prophet** (季節性與合理價值)。
+*   **共識決**: 若三者方向一致，即為**強力訊號**。
 """
 
 MANUAL_TEXT = """
